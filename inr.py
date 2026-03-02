@@ -1,15 +1,14 @@
 import torch
 import torch.nn as nn
 from tqdm import tqdm
-from inr_utils import MLP, CoarseDataset, FineDataset
-import argparse as ap
-from pytorch3d.io import save_obj
-from pytorch3d.utils import ico_sphere
+from inr_utils import MLP, CoarseDataset, FineDataset, GKAN
+from mesh_ops import save_obj, ico_sphere
 import torch.optim as optim
 from torch.utils.data import DataLoader
 from mesh_errors import point2mesh_error
 from reconstruct import reconstruct
 import os
+import argparse as ap
 
 def parse_args():
     pr = ap.ArgumentParser()
@@ -35,7 +34,7 @@ if __name__=="__main__":
     
     coarse_dataset = CoarseDataset(args.mesh_name, args.batch_size)
     loader = DataLoader(coarse_dataset, batch_size=1, shuffle=False, num_workers=8, pin_memory=True)
-    coarse_model = MLP(input_dim=3, hidden_dim=20, output_dim=3, num_layers=12, pe_dim=0).cuda()
+    coarse_model = GKAN(input_dim=3, hidden_dim=20, output_dim=3, num_layers=12, pe_dim=0).cuda()
     criterion = nn.MSELoss()
 
     if os.path.exists(f'remeshed/{args.mesh_name}/coarse_weights.pth'):
@@ -145,4 +144,3 @@ if __name__=="__main__":
         f = open("results1.txt", "a")
         f.write(f"{args.mesh_name},{coarse_size+fine_size:.2f},{total_error:.2f}\n")
         f.close()
-

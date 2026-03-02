@@ -1,6 +1,5 @@
 import torch
-from pytorch3d.utils import ico_sphere
-from pytorch3d.io import save_obj, load_obj
+from mesh_ops import ico_sphere, save_obj, load_obj
 from inr_utils import MLP
 import argparse as ap
 from mesh_errors import get_face_areas, point2mesh_error

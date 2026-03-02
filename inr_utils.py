@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import Dataset
-from pytorch3d.io import load_obj
+from mesh_ops import load_obj
 from mesh_errors import sample_points_on_mesh, get_face_areas
 from copy import deepcopy
 import numpy as np
@@ -66,7 +66,89 @@ class MLP(nn.Module):
                 print(f"Error reading {name}")
                 breakpoint()
 
+class GKANLayer(nn.Module):
+    omega_0: torch.Tensor
 
+    def __init__(self, in_features, out_features):
+        super().__init__()
+        self.linear = nn.Linear(in_features * 3, out_features)
+        base = torch.tensor([[1.0], [2.0], [3.0]], dtype=torch.float32)
+        omega = base.repeat(1, in_features).reshape(1, in_features * 3)
+        self.register_buffer("omega_0", omega)
+
+    def _load_from_state_dict(
+        self,
+        state_dict,
+        prefix,
+        local_metadata,
+        strict,
+        missing_keys,
+        unexpected_keys,
+        error_msgs,
+    ):
+        omega_key = prefix + "omega_0"
+        if omega_key not in state_dict:
+            state_dict[omega_key] = self.omega_0.detach().clone().cpu()
+        super()._load_from_state_dict(
+            state_dict,
+            prefix,
+            local_metadata,
+            strict,
+            missing_keys,
+            unexpected_keys,
+            error_msgs,
+        )
+
+    def forward(self, input):
+        return self.linear(torch.sin(self.omega_0 * input.repeat(1, 3)))
+
+class GKAN(nn.Module):
+    def __init__(self, input_dim, hidden_dim, output_dim, num_layers, pe_dim):
+        super(GKAN, self).__init__()
+        self.num_layers = num_layers
+        self.pe = PE(pe_dim)
+        self.layers = nn.ModuleList([nn.Sequential(
+            GKANLayer(input_dim*(pe_dim*2+1) if i == 0 else hidden_dim, hidden_dim),
+            nn.SiLU(),
+            nn.LayerNorm(hidden_dim, elementwise_affine=False),
+        ) for i in range(num_layers)])
+        self.output_layer = nn.Linear(hidden_dim, output_dim)
+
+    def forward(self, x):
+        x = self.pe(x) if self.pe is not None else x
+        out = x
+        for i in range(self.num_layers):
+            residual = out
+            out = self.layers[i](out)
+            if i > 0:
+                out += residual
+        out = self.output_layer(out)
+        return out
+
+    def serialize_params(self, file_path):
+        param_values = []
+        total_elements = 0
+        for _, param in self.named_parameters():
+            param_values.append(param.data.cpu())
+            total_elements += param.data.nbytes
+        with open(file_path, 'wb') as f:
+            for value in param_values:
+                bytes = value.numpy().tobytes()
+                f.write(bytes)
+        return total_elements
+
+    def read_from_bin(self, file_path, read_type="float16"):
+        with open(file_path, 'rb') as f:
+            np_bytes = np.frombuffer(f.read(), dtype=read_type)
+        offset = 0
+        for name, param in self.named_parameters():
+            try:
+                num_elements_to_read = param.data.numel()
+                param.data = torch.tensor(np_bytes[offset:offset+num_elements_to_read]).reshape(param.data.shape).to(param.data.device).to(param.data.dtype)
+                offset += num_elements_to_read
+            except:
+                print(f"Error reading {name}")
+                breakpoint()
 class CoarseDataset(Dataset):
     def __init__(self, mesh_name, batch_size=2048):
         embedding_path = f'remeshed/{mesh_name}/embedding.obj'
@@ -109,4 +191,3 @@ class FineDataset(Dataset):
         sfv = self.coarse_dataset.normalized[sampled_f]
         sampled_targets = sfv[:,0,:]*bcs[0] + sfv[:,1,:]*bcs[1] + sfv[:,2,:]*bcs[2]
         return sampled_coarse, (sampled_targets-sampled_coarse)*self.scale
-
