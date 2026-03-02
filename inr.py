@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 from tqdm import tqdm
 from inr_utils import MLP, CoarseDataset, FineDataset, GKAN
-from mesh_ops import save_obj, ico_sphere
+from mesh_ops import save_obj, ico_sphere, generate_embedding_from_normalized
 import torch.optim as optim
 from torch.utils.data import DataLoader
 from mesh_errors import point2mesh_error
@@ -30,7 +30,13 @@ if __name__=="__main__":
     if not os.path.exists(f'remeshed/{args.mesh_name}'):
         os.system(f'../smat/build/coarse_to_fine {args.mesh_name}')
         assert os.path.exists(f'remeshed/{args.mesh_name}'), f'remeshed/{args.mesh_name} does not exist'
-        assert os.path.exists(f'remeshed/{args.mesh_name}/embedding.obj'), f'remeshed/{args.mesh_name}/embedding.obj does not exist'
+    embedding_path = f'remeshed/{args.mesh_name}/embedding.obj'
+    normalized_path = f'remeshed/{args.mesh_name}/input_normalized.obj'
+    if not os.path.exists(embedding_path):
+        assert os.path.exists(normalized_path), f'{normalized_path} does not exist'
+        print(f'"{embedding_path}" not found. Generating topology-preserving embedding from "{normalized_path}".')
+        generate_embedding_from_normalized(normalized_path, embedding_path)
+        assert os.path.exists(embedding_path), f'failed to generate {embedding_path}'
     
     coarse_dataset = CoarseDataset(args.mesh_name, args.batch_size)
     loader = DataLoader(coarse_dataset, batch_size=1, shuffle=False, num_workers=8, pin_memory=True)

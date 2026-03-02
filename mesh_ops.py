@@ -164,3 +164,59 @@ def ico_sphere(level: int, device: str = "cpu") -> IcoSphere:
     faces = torch.tensor(faces_list, dtype=torch.long, device=device)
     return IcoSphere(verts=verts, faces=faces)
 
+
+def _vertex_neighbor_mean(verts: torch.Tensor, faces: torch.Tensor) -> torch.Tensor:
+    # Build undirected edges from triangles, then aggregate neighbor means.
+    e01 = faces[:, [0, 1]]
+    e12 = faces[:, [1, 2]]
+    e20 = faces[:, [2, 0]]
+    edges = torch.cat([e01, e12, e20], dim=0)
+    rev_edges = edges[:, [1, 0]]
+    directed = torch.cat([edges, rev_edges], dim=0)
+
+    src = directed[:, 0]
+    dst = directed[:, 1]
+    accum = torch.zeros_like(verts)
+    accum.index_add_(0, src, verts[dst])
+    deg = torch.bincount(src, minlength=verts.shape[0]).to(verts.dtype).unsqueeze(1)
+    return accum / deg.clamp_min(1.0)
+
+
+def generate_embedding_from_normalized(
+    normalized_path: str,
+    embedding_path: str,
+    smooth_iters: int = 30,
+    lambda_step: float = 0.5,
+    mu_step: float = -0.53,
+    sphere_mix: float = 0.75,
+) -> None:
+    """
+    Generate an embedding mesh that preserves vertex/face indexing.
+
+    The output uses exactly the same topology as input_normalized.obj, so
+    barycentric correspondence by face index remains valid.
+    """
+    verts, face_data, _ = load_obj(normalized_path, load_textures=False, device="cpu")
+    faces = face_data.verts_idx
+    if verts.numel() == 0 or faces.numel() == 0:
+        raise ValueError(f"Invalid mesh in {normalized_path}")
+
+    v = verts.clone()
+    center = v.mean(dim=0, keepdim=True)
+    v = v - center
+    scale = v.norm(dim=1).max().clamp_min(1e-8)
+    v = v / scale
+
+    # Taubin smoothing: lambda/mu pair reduces high-frequency detail
+    # while limiting global shrinkage.
+    for _ in range(max(0, smooth_iters)):
+        nbr_mean = _vertex_neighbor_mean(v, faces)
+        v = v + lambda_step * (nbr_mean - v)
+        nbr_mean = _vertex_neighbor_mean(v, faces)
+        v = v + mu_step * (nbr_mean - v)
+
+    sphere = v / v.norm(dim=1, keepdim=True).clamp_min(1e-8)
+    embedding_verts = sphere_mix * sphere + (1.0 - sphere_mix) * v
+    embedding_verts = embedding_verts / embedding_verts.norm(dim=1, keepdim=True).clamp_min(1e-8)
+
+    save_obj(embedding_path, embedding_verts, faces)
